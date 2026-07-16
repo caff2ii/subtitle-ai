@@ -151,7 +151,7 @@
 <body>
 
 <div class="container">
-    <h1>🎬 SRT 字幕語意斷句 & 時間軸等比例拆分 v1.3</h1>
+    <h1>🎬 SRT 字幕語意斷句 & 時間軸等比例拆分 v1.4</h1>
     <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 25px;">
         上載 SRT 檔案，AI 將自動進行語意斷句並去除行尾標點符號。前端 JS 演算法會根據字數比例精確重新計算時間軸，保證 100% 零字詞增刪（支援中英雙語）。
     </p>
@@ -248,11 +248,14 @@
                 const chunk = chunks[i];
                 const promptTexts = chunk.map((item, idx) => `[ID:${idx}] ${item.text}`).join('\n');
     
-                // 計算目前這批字幕是原始 SRT 的第幾句到第幾句
-                const startLineNum = (i * chunks[0].length) + 1;
-                const endLineNum = startLineNum + chunk.length - 1;
+                // 精確獲取當前批次對應原始 SRT 的實際句數
+                const startLineNum = chunk[0].index;
+                const endLineNum = chunk[chunk.length - 1].index;
                 
-                // 預估剩餘時間（以每批次間隔 2.5 秒 + API 回應約 2 秒計算，每批約 4.5 秒）
+                // 獲取當前批次的時間軸區間
+                const timeRange = `[${chunk[0].startTime} ➔ ${chunk[chunk.length - 1].endTime}]`;
+                
+                // 預估剩餘時間
                 const remainingChunks = chunks.length - i;
                 const estRemainingSec = remainingChunks * 4.5;
                 const estTimeText = estRemainingSec > 60 
@@ -261,7 +264,9 @@
                 
                 showStatus(
                     `⏳ 正在處理第 ${i + 1} / ${chunks.length} 批字幕 ${i > 0 ? '（中斷續傳中）' : ''}\n` +
-                    `📝 當前進度：正在分析第 ${startLineNum} 至 ${endLineNum} 句字幕\n` +
+                    `📝 字幕行數：第 ${startLineNum} 至 ${endLineNum} 句\n` +
+                    `⏰ 時間區間：${timeRange}\n` +
+                    `📊 當前進度：已成功拆分並導出 ${processedSrtData.length} 條新字幕\n` +
                     `⏱️ ${estTimeText}\n\n` +
                     `提示：請勿關閉網頁。如果長字幕觸發 API 上限出錯，程式會停下並保留進度，屆時您可以直接按按鈕重試。`, 
                     'info'
