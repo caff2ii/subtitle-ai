@@ -414,23 +414,23 @@
                 const lineWeights = lines.map(line => getLineWeight(line));
                 const totalWeight = lineWeights.reduce((a, b) => a + b, 0) || 1;
 
-                let currentStartMs = startMs;
+                let accumulatedDuration = 0;
                 for (let i = 0; i < lines.length; i++) {
+                    const currentStartMs = startMs + accumulatedDuration;
                     const lineDuration = Math.round(totalDuration * (lineWeights[i] / totalWeight));
                     let currentEndMs = currentStartMs + lineDuration;
                     
-                    // 最後一行完美貼合結束時間，防止毫秒累積誤差
                     if (i === lines.length - 1) {
                         currentEndMs = endMs;
                     }
-
+                
                     results.push({
                         startTime: msToTimecode(currentStartMs),
                         endTime: msToTimecode(currentEndMs),
                         text: lines[i]
                     });
-
-                    currentStartMs = currentEndMs;
+                
+                    accumulatedDuration += (currentEndMs - currentStartMs);
                 }
             }
         });
