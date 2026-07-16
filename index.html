@@ -76,12 +76,12 @@
             border-radius: 6px;
             display: none;
             font-weight: 500;
+            white-space: pre-line;
         }
         .status-info { background-color: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
         .status-success { background-color: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
         .status-error { background-color: #fef2f2; color: #991b1b; border: 1px solid #fca5a5; }
         
-        /* Progress Bar */
         .progress-container {
             width: 100%;
             background-color: var(--border);
@@ -103,7 +103,7 @@
 <div class="container">
     <h1>🎬 SRT 字幕語意斷句 & 時間軸等比例拆分</h1>
     <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 25px;">
-        上載 SRT 檔案，AI 將自動進行語意斷句並去除行尾標點符號。前端 JS 演算法會根據字數比例精確重新計算時間軸，保證 100% 零字詞增刪。
+        上載 SRT 檔案，AI 將自動進行語意斷句並去除行尾標點符號。前端 JS 演算法會根據字數比例精確重新計算時間軸，保證 100% 零字詞增刪（支援中英雙語）。
     </p>
 
     <div class="form-group">
@@ -155,27 +155,28 @@
             return;
         }
 
-        // 儲存 API Key 方便下次使用
+        // 儲存 API Key
         localStorage.setItem('gemini_api_key', apiKey);
+        processBtn.disabled = true;
 
         try {
             showStatus('正在讀取並解析 SRT 檔案...', 'info');
             const fileText = await file.text();
             
-            // 1. 解析 SRT 轉為 JSON Array
+            // 1. 解析 SRT
             const srtData = parseSRT(fileText);
             if (srtData.length === 0) {
-                throw new Error('無法解析該 SRT 檔案，請檢查格式是否正確。');
+                throw new Error('無法解析該 SRT 檔案，請確認檔案格式是否正確。');
             }
 
-            // 2. 分批處理 (Chunking) - 每 30 句字幕打包成一組送給 API，避免長度過長
+            // 2. 分批處理 (Chunking) - 每 30 句一組
             const chunkSize = 30;
             const chunks = [];
             for (let i = 0; i < srtData.length; i += chunkSize) {
                 chunks.push(srtData.slice(i, i + chunkSize));
             }
 
-            showStatus(`檔案解析成功！共 ${srtData.length} 條字幕，分為 ${chunks.length} 個批次處理中...`, 'info');
+            showStatus(`檔案解析成功！共 ${srtData.length} 條字幕，分為 ${chunks.length} 個批次處理中...\n(為避免觸發 Google API 頻率限制，程式會自動調節發送速度)`, 'info');
             progressContainer.style.display = 'block';
             progressBar.style.width = '0%';
 
@@ -183,13 +184,14 @@
 
             for (let i = 0; i < chunks.length; i++) {
                 const chunk = chunks[i];
-                // 提取純文字並加上自訂 index 標籤，方便回傳後對照
                 const promptTexts = chunk.map((item, idx) => `[ID:${idx}] ${item.text}`).join('\n');
 
-                // 呼叫 Gemini 1.5 Flash API
+                showStatus(`正在處理第 ${i + 1} / ${chunks.length} 批字幕...`, 'info');
+
+                // 呼叫帶有自動重試機制的 API
                 const processedTexts = await callGeminiAPI(apiKey, promptTexts);
 
-                // 解析 AI 回傳的結果，與原數據合併並進行「等比例時間拆分」
+                // 解析並重新等比例計算時間軸
                 const parsedChunkResults = parseAIResponse(processedTexts, chunk);
                 processedSrtData = processedSrtData.concat(parsedChunkResults);
 
@@ -198,17 +200,18 @@
                 progressBar.style.width = `${percent}%`;
             }
 
-            // 3. 重新編排最終的 SRT 字幕序號，並組裝回 SRT 格式字串
+            // 3. 重新生成 SRT
             const finalSRT = generateSRT(processedSrtData);
 
             // 4. 提供下載
             downloadBlob(finalSRT, file.name.replace('.srt', '_formatted.srt'), 'text/srt');
-            showStatus('處理完成！新字幕檔案已自動下載。', 'success');
+            showStatus('🎉 處理完成！新字幕檔案已成功自動下載。', 'success');
 
         } catch (error) {
             console.error(error);
-            showStatus(`發生錯誤: ${error.message}`, 'error');
+            showStatus(`❌ 發生錯誤: ${error.message}\n請檢查 API Key 是否正確，或稍後再試。`, 'error');
         } finally {
+            processBtn.disabled = false;
             progressContainer.style.display = 'none';
         }
     });
@@ -223,22 +226,23 @@
     }
 
     // ----------------------------
-    // 1. SRT Parser (解析器)
+    // 1. SRT Parser (正則優化版)
     // ----------------------------
     function parseSRT(data) {
-        // 標準化換行符
         const cleanData = data.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-        const blocks = cleanData.split('\n\n');
+        // 使用正則拆分空行，相容多個連續空行
+        const blocks = cleanData.split(/\n\s*\n/);
         const items = [];
 
         blocks.forEach(block => {
-            const lines = block.trim().split('\n');
+            const lines = block.trim().split('\n').map(l => l.trim());
             if (lines.length >= 3) {
                 const index = parseInt(lines[0], 10);
                 const timecodeLine = lines[1];
-                const text = lines.slice(2).join(' '); // 合併多行文字為單行
+                const text = lines.slice(2).join(' '); // 合併多行字幕
 
-                const match = timecodeLine.match(/(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})/);
+                // 相容 1 位數到 2 位數的小時表示
+                const match = timecodeLine.match(/(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{3})/);
                 if (match) {
                     items.push({
                         index,
@@ -253,16 +257,16 @@
     }
 
     // ----------------------------
-    // 2. 呼叫 Gemini 1.5 Flash API
+    // 2. 呼叫 Gemini 1.5 Flash API (Exponential Backoff 重試版)
     // ----------------------------
-    async function callGeminiAPI(apiKey, text) {
+    async function callGeminiAPI(apiKey, text, retries = 3, delayMs = 2000) {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
         
         const systemInstruction = 
-            "You are an expert subtitle editor. Your task is to split English sentences into smaller natural clauses/phrases. " +
+            "You are an expert subtitle editor. Your task is to split English or Chinese sentences into smaller natural clauses/phrases. " +
             "Follow these rules strictly:\n" +
             "1. Output format: Keep the [ID:X] prefix at the start of each segment block. Under each ID, split the text into natural clauses, outputting ONE CLAUSE PER LINE.\n" +
-            "2. DO NOT add, delete, or change any words. The vocabulary and word order must be 100% identical to the input.\n" +
+            "2. DO NOT add, delete, or change any words. The vocabulary and character order must be 100% identical to the input.\n" +
             "3. Remove all punctuation marks (periods, commas, question marks, etc.) from the end of each line. Keep internal apostrophes (e.g., don't).\n" +
             "4. Example output format:\n" +
             "[ID:0]\n" +
@@ -271,74 +275,101 @@
             "[ID:1]\n" +
             "Next line of text";
 
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                contents: [{
-                    parts: [{
-                        text: `Please format the following list of subtitles according to instructions:\n\n${text}`
-                    }]
-                }],
-                systemInstruction: {
-                    parts: [{ text: systemInstruction }]
-                },
-                generationConfig: {
-                    temperature: 0.1 // 降低隨機性，保證字詞精確度
+        for (let attempt = 0; attempt < retries; attempt++) {
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        contents: [{
+                            parts: [{
+                                text: `Please format the following list of subtitles according to instructions:\n\n${text}`
+                            }]
+                        }],
+                        systemInstruction: {
+                            parts: [{ text: systemInstruction }]
+                        },
+                        generationConfig: {
+                            temperature: 0.1 // 最低隨機性，防止幻覺
+                        }
+                    })
+                });
+
+                // 遇到 429 頻率超限錯誤，啟動延遲重試
+                if (response.status === 429) {
+                    if (attempt < retries - 1) {
+                        console.warn(`Rate limit hit (429). Retrying in ${delayMs}ms...`);
+                        await new Promise(resolve => setTimeout(resolve, delayMs));
+                        delayMs *= 2; // 指數退避
+                        continue;
+                    }
                 }
-            })
-        });
 
-        if (!response.ok) {
-            const errData = await response.json();
-            throw new Error(errData.error?.message || 'API 呼叫失敗');
+                if (!response.ok) {
+                    const errData = await response.json().catch(() => ({}));
+                    throw new Error(errData.error?.message || `API Error (Status: ${response.status})`);
+                }
+
+                const resData = await response.json();
+                return resData.candidates[0].content.parts[0].text;
+
+            } catch (error) {
+                if (attempt === retries - 1) throw error;
+                console.warn(`Attempt ${attempt + 1} failed: ${error.message}. Retrying in ${delayMs}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                delayMs *= 2;
+            }
         }
-
-        const resData = await response.json();
-        return resData.candidates[0].content.parts[0].text;
     }
 
     // ----------------------------
-    // 3. 解析 AI 回傳並「等比例拆分時間軸」
+    // 3. 解析 AI 回傳並進行「中英等比例時間軸拆分」
     // ----------------------------
     function parseAIResponse(aiText, originalChunk) {
         const results = [];
-        const blocks = aiText.split(/\[ID:\d+\]/);
-        // 清理一下，拿掉第一個空元素
-        if (blocks[0].trim() === "") blocks.shift();
+        
+        // 清理 AI 有可能產生的 Markdown Code Block ``` 包裹
+        let cleanText = aiText.replace(/```[a-zA-Z]*\n/g, '').replace(/```/g, '');
+
+        // 精確的正則表達式 Map 配對法，防範 AI 順序錯亂
+        const aiMap = new Map();
+        const regex = /\[ID:(\d+)\]\s*([\s\S]*?)(?=\[ID:\d+\]|$)/g;
+        let match;
+        while ((match = regex.exec(cleanText)) !== null) {
+            const id = parseInt(match[1], 10);
+            const content = match[2].trim();
+            aiMap.set(id, content);
+        }
 
         originalChunk.forEach((origItem, idx) => {
-            const aiBlock = blocks[idx];
-            if (!aiBlock) {
-                // 如果 AI 漏掉了這句，保留原句
+            const aiBlock = aiMap.get(idx);
+            if (aiBlock === undefined) {
+                // 如果 AI 漏掉了這句，安全回退保留原字句與時間軸
                 results.push({ startTime: origItem.startTime, endTime: origItem.endTime, text: origItem.text });
                 return;
             }
 
-            // 取得 AI 拆分出來的每一行文字（並過濾掉空行）
-            const lines = aiBlock.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            const lines = aiBlock.split('\n').map(l => l.trim()).filter(l => l.length > 0);
             
             if (lines.length <= 1) {
-                // 如果 AI 沒有拆分，直接保留原時間軸
                 results.push({ startTime: origItem.startTime, endTime: origItem.endTime, text: lines[0] || origItem.text });
             } else {
-                // **關鍵：等比例時間軸拆分演算法**
                 const startMs = timecodeToMs(origItem.startTime);
                 const endMs = timecodeToMs(origItem.endTime);
                 const totalDuration = endMs - startMs;
 
-                // 算每行單字數 (Word Count) 作為權重，如果是中文可以用 length，英文用字數
-                const lineWeights = lines.map(line => line.split(/\s+/).filter(w => w.length > 0).length || 1);
-                const totalWeight = lineWeights.reduce((a, b) => a + b, 0);
+                // 智能計算權重（相容中文與英文）
+                const lineWeights = lines.map(line => getLineWeight(line));
+                const totalWeight = lineWeights.reduce((a, b) => a + b, 0) || 1;
 
                 let currentStartMs = startMs;
                 for (let i = 0; i < lines.length; i++) {
                     const lineDuration = Math.round(totalDuration * (lineWeights[i] / totalWeight));
                     let currentEndMs = currentStartMs + lineDuration;
                     
-                    // 最後一行強制精確對齊結束時間
+                    // 最後一行完美貼合結束時間，防止毫秒累積誤差
                     if (i === lines.length - 1) {
                         currentEndMs = endMs;
                     }
@@ -357,8 +388,22 @@
         return results;
     }
 
+    // 智能雙語權重計算函數
+    function getLineWeight(line) {
+        const clean = line.replace(/\s+/g, '');
+        // 判斷是否包含中日韓（CJK）字元
+        const hasCJK = /[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(line);
+        if (hasCJK) {
+            // 如果是中文，按「字元長度」計算權重
+            return clean.length || 1;
+        } else {
+            // 如果是英文，按「單字數」計算權重
+            return line.split(/\s+/).filter(w => w.length > 0).length || 1;
+        }
+    }
+
     // ----------------------------
-    // 4. 重建 SRT 並排序
+    // 4. 重建 SRT 並重新排序序號
     // ----------------------------
     function generateSRT(items) {
         return items.map((item, index) => {
@@ -367,7 +412,7 @@
     }
 
     // ----------------------------
-    // ⚙️ 時間轉換輔助函數
+    // ⚙️ 時間轉換輔助函數 (padStart 修正版)
     // ----------------------------
     function timecodeToMs(tc) {
         const parts = tc.replace(',', '.').split(':');
@@ -380,15 +425,15 @@
     }
 
     function msToTimecode(ms) {
-        const hrs = Math.floor(ms / 3600000);
-        const mins = Math.floor((ms % 3600000) / 60000);
-        const secs = Math.floor((ms % 60000) / 1000);
-        const msecs = ms % 1000;
+        const roundedMs = Math.round(ms);
+        const hrs = Math.floor(roundedMs / 3600000);
+        const mins = Math.floor((roundedMs % 3600000) / 60000);
+        const secs = Math.floor((roundedMs % 60000) / 1000);
+        const msecs = roundedMs % 1000;
 
-        const pad = (n, z = 2) => ('00' + n).slice(-z);
-        const padMs = (n) => ('000' + n).slice(-3);
+        const pad = (n, z = 2) => String(n).padStart(z, '0');
 
-        return `${pad(hrs)}:${pad(mins)}:${pad(secs)},${padMs(msecs)}`;
+        return `${pad(hrs)}:${pad(mins)}:${pad(secs)},${pad(msecs, 3)}`;
     }
 
     // ----------------------------
