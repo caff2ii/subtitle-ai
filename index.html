@@ -151,7 +151,7 @@
 <body>
 
 <div class="container">
-    <h1>🎬 SRT 字幕語意斷句 & 時間軸等比例拆分 v1.4</h1>
+    <h1>🎬 SRT 字幕語意斷句 & 時間軸等比例拆分 v1.5</h1>
     <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 25px;">
         上載 SRT 檔案，AI 將自動進行語意斷句並去除行尾標點符號。前端 JS 演算法會根據字數比例精確重新計算時間軸，保證 100% 零字詞增刪（支援中英雙語）。
     </p>
@@ -385,19 +385,34 @@
                     })
                 });
 
-                // 遇到 429 頻率超限錯誤，啟動延遲重試
-                if (response.status === 429) {
+                // 讀取錯誤內容以判斷是否為高需求錯誤
+                let isHighDemand = false;
+                let errMsg = `API Error (Status: ${response.status})`;
+                
+                if (!response.ok) {
+                    const errData = await response.json().catch(() => ({}));
+                    errMsg = errData.error?.message || errMsg;
+                    if (errMsg.toLowerCase().includes('high demand') || response.status === 503 || response.status === 429) {
+                        isHighDemand = true;
+                    }
+                }
+
+                // 如果遇到頻率超限或伺服器爆滿，啟動延遲重試
+                if (isHighDemand) {
                     if (attempt < retries - 1) {
-                        console.warn(`Rate limit hit (429). Retrying in ${delayMs}ms...`);
+                        console.warn(`Gemini server busy or rate limited: ${errMsg}. Retrying in ${delayMs}ms...`);
+                        
+                        // 在 UI 畫面上同步提示用戶目前正在背景重試
+                        showStatus(`⚠️ Gemini 伺服器目前太繁忙/超限，正在進行第 ${attempt + 1} 次背景重試，將於 ${Math.round(delayMs/1000)} 秒後自動再試...`, 'info');
+                        
                         await new Promise(resolve => setTimeout(resolve, delayMs));
-                        delayMs *= 2; // 指數退避
+                        delayMs *= 2; // 時間加倍
                         continue;
                     }
                 }
 
                 if (!response.ok) {
-                    const errData = await response.json().catch(() => ({}));
-                    throw new Error(errData.error?.message || `API Error (Status: ${response.status})`);
+                    throw new Error(errMsg);
                 }
 
                 const resData = await response.json();
