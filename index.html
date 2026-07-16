@@ -151,7 +151,7 @@
 <body>
 
 <div class="container">
-    <h1>🎬 SRT 字幕語意斷句 & 時間軸等比例拆分 v1.2</h1>
+    <h1>🎬 SRT 字幕語意斷句 & 時間軸等比例拆分 v1.3</h1>
     <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 25px;">
         上載 SRT 檔案，AI 將自動進行語意斷句並去除行尾標點符號。前端 JS 演算法會根據字數比例精確重新計算時間軸，保證 100% 零字詞增刪（支援中英雙語）。
     </p>
@@ -191,78 +191,94 @@
     const progressContainer = document.getElementById('progressContainer');
     const progressBar = document.getElementById('progressBar');
 
+    let currentChunkIndex = 0;
+    let processedSrtData = [];
+    let chunks = [];
+    let currentFile = null;
+    
     processBtn.addEventListener('click', async () => {
         const apiKey = document.getElementById('apiKey').value.trim();
         const fileInput = document.getElementById('srtFile');
         const file = fileInput.files[0];
 
+        // 如果改選了別個新檔案，重設按鈕文字
+        if (file && file !== currentFile) {
+            processBtn.textContent = '開始處理字幕';
+        }
+        
         if (!apiKey) {
             showStatus('請先輸入 Gemini API Key！', 'error');
             return;
         }
-        if (!file) {
-            showStatus('請選擇一個 SRT 檔案！', 'error');
-            return;
-        }
-
-        // 儲存 API Key
-        localStorage.setItem('gemini_api_key', apiKey);
-        processBtn.disabled = true;
-
-        try {
+    
+        // 如果是用戶新選檔案，或者第一次按，就初始化
+        if (file && file !== currentFile) {
+            currentFile = file;
+            currentChunkIndex = 0;
+            processedSrtData = [];
+            
             showStatus('正在讀取並解析 SRT 檔案...', 'info');
             const fileText = await file.text();
-            
-            // 1. 解析 SRT
             const srtData = parseSRT(fileText);
             if (srtData.length === 0) {
-                throw new Error('無法解析該 SRT 檔案，請確認檔案格式是否正確。');
+                showStatus('無法解析該 SRT 檔案，請確認檔案格式是否正確。', 'error');
+                return;
             }
-
-            // 2. 分批處理 (Chunking) - 每 30 句一組
-            const chunkSize = 30;
-            const chunks = [];
+    
+            const chunkSize = 15; // 順便降低每批數量減少429機率
+            chunks = [];
             for (let i = 0; i < srtData.length; i += chunkSize) {
                 chunks.push(srtData.slice(i, i + chunkSize));
             }
-
-            showStatus(`檔案解析成功！共 ${srtData.length} 條字幕，分為 ${chunks.length} 個批次處理中...\n(為避免觸發 Google API 頻率限制，程式會自動調節發送速度)`, 'info');
+        } else if (!currentFile) {
+            showStatus('請選擇一個 SRT 檔案！', 'error');
+            return;
+        }
+    
+        // 儲存 API Key
+        localStorage.setItem('gemini_api_key', apiKey);
+        processBtn.disabled = true;
+    
+        try {
             progressContainer.style.display = 'block';
-            progressBar.style.width = '0%';
-
-            let processedSrtData = [];
-
-            for (let i = 0; i < chunks.length; i++) {
+    
+            // 由上次斷開的 currentChunkIndex 開始繼續
+            for (let i = currentChunkIndex; i < chunks.length; i++) {
+                currentChunkIndex = i; // 隨時記錄當前進度
                 const chunk = chunks[i];
                 const promptTexts = chunk.map((item, idx) => `[ID:${idx}] ${item.text}`).join('\n');
-
-                showStatus(`正在處理第 ${i + 1} / ${chunks.length} 批字幕...`, 'info');
-
-                // 呼叫帶有自動重試機制的 API
+    
+                showStatus(`正在處理第 ${i + 1} / ${chunks.length} 批字幕...${i > 0 ? '（續傳中）' : ''}`, 'info');
+    
                 const processedTexts = await callGeminiAPI(apiKey, promptTexts);
-
-                // 解析並重新等比例計算時間軸
                 const parsedChunkResults = parseAIResponse(processedTexts, chunk);
                 processedSrtData = processedSrtData.concat(parsedChunkResults);
-
-                // 更新進度條
+    
                 const percent = Math.round(((i + 1) / chunks.length) * 100);
                 progressBar.style.width = `${percent}%`;
+    
+                // 智能節流：每批次之間強制強制休息 2.5 秒，避免連續請求被封
+                if (i < chunks.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 2500));
+                }
             }
-
-            // 3. 重新生成 SRT
+    
+            // 全部完成後才重設狀態並下載
             const finalSRT = generateSRT(processedSrtData);
-
-            // 4. 提供下載
-            downloadBlob(finalSRT, file.name.replace('.srt', '_formatted.srt'), 'text/srt');
-            showStatus('🎉 處理完成！新字幕檔案已成功自動下載。', 'success');
-
+            downloadBlob(finalSRT, currentFile.name.replace('.srt', '_formatted.srt'), 'text/srt');
+            showStatus('🎉 全部處理完成！新字幕檔案已成功自動下載。', 'success');
+            
+            // 成功後清除暫存，以便下次放入新檔
+            currentFile = null;
+            currentChunkIndex = 0;
+            processedSrtData = [];
+    
         } catch (error) {
             console.error(error);
-            showStatus(`❌ 發生錯誤: ${error.message}\n請檢查 API Key 是否正確，或稍後再試。`, 'error');
+            processBtn.textContent = '重新嘗試 (繼續未完成部分)';
+            showStatus(`❌ 處理在第 ${currentChunkIndex + 1} / ${chunks.length} 批發生錯誤: ${error.message}\n\n💡 檢查網絡或 Key 後，您可以直接再點擊上方按鈕「繼續處理」剩餘段落。`, 'error');
         } finally {
             processBtn.disabled = false;
-            progressContainer.style.display = 'none';
         }
     });
 
@@ -309,7 +325,7 @@
     // ----------------------------
     // 2. 呼叫 Gemini 3.5 Flash API (Exponential Backoff 重試版)
     // ----------------------------
-    async function callGeminiAPI(apiKey, text, retries = 3, delayMs = 2000) {
+    async function callGeminiAPI(apiKey, text, retries = 5, delayMs = 4000) {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`;
         
         const systemInstruction = 
