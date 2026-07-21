@@ -372,7 +372,7 @@
     // 2. 呼叫 Gemini 3.5 Flash API (Exponential Backoff 重試版)
     // ----------------------------
     async function callGeminiAPI(apiKey, text, retries = 5, delayMs = 4000) {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`;
         
         const systemInstruction = 
             "You are an expert subtitle editor. Your task is to split English or Chinese sentences into smaller natural clauses/phrases. " +
